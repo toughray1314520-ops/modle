@@ -1,0 +1,65 @@
+CONTROLFILE = '.\control.dat'
+STRUN  = 1
+ENDRUN = 100
+FILEON = 'result.DAT'         ! Output file
+FILEOL = 'MODEL.LOG'     ! Log file
+FILEIR = '.\rerun11.dat'    ! Rerun file
+FILEIT = '.\experiment.dat'  ! Experiment file 
+FILEI1 = '.\rice.crp' ! Crop file 
+FILEI2 = '.\PADDY.DAT'    ! Soil file
+
+*--------------------------------------------------------*
+* Optionally, Weather Station information can be provided*
+* here. It is useful for large amount of simulations     * 
+* under same management                                  *
+*--------------------------------------------------------*
+WTRDIR = 'D:\learning\modle_Tan\'     !* Folder name of weather files
+CNTR   = 'Liang'  !* Weather station name
+ISTN   = 1       !* Weather station number
+MULTIY = 'NO'    !* Whether multiple year weather file  
+                   !*  is used, default is 'NO' or if the 
+                   !*  variable do not appear.
+*--------------------------------------------------------*
+* Rice monoculture cropping system                       *
+* the default for SOILKILL is "YES", soil will be        *
+* reinitiated every crop season, and all processes in    *
+* soil will also stop as growth stop. if "NO", soil will *
+* only be initiated at the starting date of simulation   *
+* and all processes in soil will continue after growth   *
+* stop.                                                  *
+*--------------------------------------------------------*
+*SOILKILL = 'NO'   !* Whether the soil processes continue
+*                   !* after crop maturity.
+*--------------------------------------------------------*
+* Set output/print options                               *
+*--------------------------------------------------------*
+PRDEL  = 1.   ! Output time step (day), too much reruns, 
+               !  omit detail outputs
+IPFORM = 5    ! Code for output table format:
+COPINF = 'N'  ! Switch variable whether to copy the input 
+               !  files to the output file    
+               !  ('N' = do not copy, 'Y' = copy)     
+DELTMP = 'Y'  ! Switch variable what should be done with 
+               !  the temporary output file
+               !  ('N' = do not delete, 'Y' = delete)        
+IFLAG  = 1100 ! Indicates where weather error and 
+               !  warnings go (1101 means errors and 
+               !  warnings to log file, errors to screen 
+               !  see FSE manual)
+*PRSEL =
+* 'WSO_OBS','WSO',
+*'WAGT_OBS','WAGT',
+*'WST_OBS','WST',
+*'WLVG_OBS','WLVG',
+*'WLVD_OBS','WLVD',
+*'LAI_OBS','LAI'
+    ! The string array PRSEL contains the output variables for which
+    ! formatted tables have to be made. One or more times there is a
+    ! series of variable names terminated by the word <TABLE>.
+    ! The translator writes the variables in each PRINT statement to
+    ! a separate table
+                               !*  in op.dat 
+*IOBSD = 2008,161  !* List of observation data for which     
+                    !*  output is required. The list should     
+                    !*  consist of pairs <year>,<day> 
+                    !*  combination
