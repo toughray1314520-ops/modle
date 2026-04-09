@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import matplotlib.tri as mtri
 import matplotlib.colors as mcolors
 import argparse
+import joblib
 import glob
 import matplotlib.font_manager as fm
 from matplotlib.lines import Line2D
@@ -53,66 +54,10 @@ def _try_paths(default_name="IR×FER66.xlsx"):
 
 def load_data(file_path=None):
     if not file_path:
-        found = _try_paths()
-        if not found:
-            raise FileNotFoundError("未找到 IR×FER66.xlsx。请用 --input-xlsx 指定数据路径。")
-        file_path = found[0]
-    xl = pd.ExcelFile(file_path)
-    sheets = xl.sheet_names
-    all_df = []
-    
-    for sheet in sheets:
-        try:
-            df = pd.read_excel(file_path, sheet_name=sheet)
-            df.columns = df.columns.str.strip()
-            df['SheetName'] = sheet
-            
-            if 'YEAR' in df.columns:
-                df = df[df['YEAR'].astype(str).str.strip().str.lower() != 'mean'].copy()
-                df['YEAR'] = pd.to_numeric(df['YEAR'], errors='coerce')
-                df = df[df['YEAR'].notna()].copy()
-                
-            parts = sheet.split('+')
-            fert_part = parts[0].upper().replace('N','').strip()
-            
-            # 解析施肥量
-            try:
-                if fert_part.endswith('%'):
-                    val = int(fert_part.replace('%','').replace('+',''))
-                    fert_pct_of225 = 100 + val if val < 0 else 100 + val
-                    fert_abs = 225 * fert_pct_of225 / 100.0
-                else:
-                    fert_abs = float(fert_part)
-            except Exception:
-                fert_abs = np.nan
-                
-            df['Fert_abs'] = fert_abs
-            
-            # 数值转换
-            for _col in ['WRR14', 'IRCUM', 'RAINCUM', 'TRCCUM', 'EVSWCUM', 'FERCUM', 'TAVERC', 'PARCUM']:
-                if _col in df.columns:
-                    df[_col] = pd.to_numeric(df[_col], errors='coerce')
-
-            if 'FERCUM' in df.columns and df['FERCUM'].notna().any():
-                df['Fert_abs'] = df['FERCUM']
-                    
-            # 计算 WUE（降雨+灌溉）与 NUE
-            ir = df['IRCUM'].fillna(0) if 'IRCUM' in df.columns else pd.Series(0, index=df.index)
-            ra = df['RAINCUM'].fillna(0) if 'RAINCUM' in df.columns else pd.Series(0, index=df.index)
-            df['WUE'] = np.where((ir + ra) > 0, df['WRR14'] / (ir + ra), np.nan)
-                
-            # 如果 FERCUM 为空，用 Fert_abs 替代
-            if 'FERCUM' not in df.columns or df['FERCUM'].isnull().all():
-                df['FERCUM'] = df['Fert_abs']
-                
-            df['NUE'] = np.where(df['FERCUM'].fillna(0) > 0, df['WRR14'] / df['FERCUM'], np.nan)
-            
-            all_df.append(df)
-        except Exception as e:
-            pass
-            
-    all_df = pd.concat(all_df, ignore_index=True) if len(all_df) > 0 else pd.DataFrame()
-    return all_df
+        file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'surrogate_dataset.csv')
+    df = pd.read_csv(file_path)
+    df['Fert_abs'] = df['FERCUM']
+    return df
 
 
 def _parse_args():
@@ -132,7 +77,7 @@ print("正在读取数据...")
 df = load_data(_args.input_xlsx)
 
 use_climate_features = True
-climate_cols = ['RAINCUM', 'TAVERC', 'PARCUM']
+climate_cols = ['Acc_TMAX', 'Acc_TMIN', 'Acc_TAVG', 'Acc_RAIN']
 RANDOM_STATE = 42
 K_CLIMATE = 100
 CLIMATE_QS = [0.25, 0.50, 0.75]
@@ -200,16 +145,11 @@ print("正在训练机器学习模型...")
 USE_GPR = False
 use_gpr = USE_GPR
 
-rf_yield = RandomForestRegressor(n_estimators=500, random_state=42)
-rf_yield.fit(X, y_yield)
-
-# 如需切换到 GPR，请将 USE_GPR 设为 True，并取消以下 GPR 代码块注释
-# use_gpr = True
-# gpr_scaler = StandardScaler()
-# X_gpr = gpr_scaler.fit_transform(X)
-# kernel = C(1.0, (1e-3, 1e3)) * RBF(length_scale=np.ones(X_gpr.shape[1]), length_scale_bounds=(1.0, 1e4)) + WhiteKernel(noise_level=1e-3)
-# gpr_yield = GaussianProcessRegressor(kernel=kernel, alpha=1e-6, normalize_y=True, random_state=42)
-# gpr_yield.fit(X_gpr, y_yield)
+rf_yield = joblib.load(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'surrogate_model_best_tree.pkl'))
+gpr_yield = joblib.load(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'surrogate_model_gpr.pkl'))
+gpr_scaler = joblib.load(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'scaler_gpr.pkl'))
+use_gpr = USE_GPR
+# Features order required by surrogate_model_best_tree.pkl: ['FERCUM', 'IRCUM', 'Acc_TMAX', 'Acc_TMIN', 'Acc_TAVG', 'Acc_RAIN']
 
 # 生成预测网格 (寻找帕累托最优的搜索空间)
 fert_grid = np.linspace(max(0, X[:,0].min()), X[:,0].max(), 100)
@@ -235,19 +175,21 @@ if use_climate_features and (clim_samples is not None):
     if ENABLE_RELIABILITY_FILTER:
         Y_samples = np.empty((int(clim_samples.shape[0]), n_grid), dtype=float)
     for k in range(clim_samples.shape[0]):
-        rain, tav, par = float(clim_samples[k, 0]), float(clim_samples[k, 1]), float(clim_samples[k, 2])
+        tmax, tmin, tavg, rain = float(clim_samples[k, 0]), float(clim_samples[k, 1]), float(clim_samples[k, 2]), float(clim_samples[k, 3])
         Xk = np.column_stack([
             F_flat,
             I_flat,
+            np.full(n_grid, tmax, dtype=float),
+            np.full(n_grid, tmin, dtype=float),
+            np.full(n_grid, tavg, dtype=float),
             np.full(n_grid, rain, dtype=float),
-            np.full(n_grid, tav, dtype=float),
-            np.full(n_grid, par, dtype=float),
         ])
+        # Force feature names if necessary, but numpy array is fine if tree model accepts it.
         if use_gpr:
-            Xk_gpr = gpr_scaler.transform(Xk)
+            Xk_gpr = gpr_scaler.transform(pd.DataFrame(Xk, columns=['FERCUM', 'IRCUM', 'Acc_TMAX', 'Acc_TMIN', 'Acc_TAVG', 'Acc_RAIN']))
             yk = gpr_yield.predict(Xk_gpr)
         else:
-            yk = rf_yield.predict(Xk)
+            yk = rf_yield.predict(pd.DataFrame(Xk, columns=['FERCUM', 'IRCUM', 'Acc_TMAX', 'Acc_TMIN', 'Acc_TAVG', 'Acc_RAIN']))
         sum_y += yk
         if Y_samples is not None:
             Y_samples[int(k)] = yk
@@ -263,17 +205,18 @@ else:
         X_grid = np.c_[
             F_flat,
             I_flat,
-            np.full(n_grid, float(climate_fixed['RAINCUM'])),
-            np.full(n_grid, float(climate_fixed['TAVERC'])),
-            np.full(n_grid, float(climate_fixed['PARCUM'])),
+            np.full(n_grid, float(climate_fixed['Acc_TMAX'])),
+            np.full(n_grid, float(climate_fixed['Acc_TMIN'])),
+            np.full(n_grid, float(climate_fixed['Acc_TAVG'])),
+            np.full(n_grid, float(climate_fixed['Acc_RAIN'])),
         ]
     else:
         X_grid = np.c_[F_flat, I_flat]
     if use_gpr:
-        X_grid_gpr = gpr_scaler.transform(X_grid)
+        X_grid_gpr = gpr_scaler.transform(pd.DataFrame(X_grid, columns=['FERCUM', 'IRCUM', 'Acc_TMAX', 'Acc_TMIN', 'Acc_TAVG', 'Acc_RAIN']))
         pred_yield = gpr_yield.predict(X_grid_gpr)
     else:
-        pred_yield = rf_yield.predict(X_grid)
+        pred_yield = rf_yield.predict(pd.DataFrame(X_grid, columns=['FERCUM', 'IRCUM', 'Acc_TMAX', 'Acc_TMIN', 'Acc_TAVG', 'Acc_RAIN']))
     reliability = None
     target_yield = None
 
@@ -553,8 +496,8 @@ def topsis_scores(X_mat, weights, high_better):
     d_minus = np.sqrt(np.nansum((Z - z_minus) ** 2, axis=1))
     c = d_minus / (d_plus + d_minus + 1e-12)
     return c
-df_treat = df.dropna(subset=['SheetName', 'Fert_abs', 'IRCUM', 'WRR14']).copy()
-df_treat = df_treat.groupby('SheetName', as_index=False).agg(
+df_treat = df.dropna(subset=['Fert_abs', 'IRCUM', 'WRR14']).copy()
+df_treat = df_treat.groupby(['Fert_abs', 'IRCUM'], as_index=False).agg(
     Fert_abs=('Fert_abs', 'mean'),
     IRCUM=('IRCUM', 'mean'),
     WRR14=('WRR14', 'mean')
@@ -636,8 +579,8 @@ def _yield_uncertainty_for_point(fert, irr, clim_samples_arr):
     y_means = np.empty(K, dtype=float)
     y_vars = np.zeros(K, dtype=float)
     for k in range(K):
-        rain, tav, par = float(clim_samples_arr[k, 0]), float(clim_samples_arr[k, 1]), float(clim_samples_arr[k, 2])
-        Xk = np.array([[float(fert), float(irr), rain, tav, par]], dtype=float)
+        tmax, tmin, tavg, rain = float(clim_samples_arr[k, 0]), float(clim_samples_arr[k, 1]), float(clim_samples_arr[k, 2]), float(clim_samples_arr[k, 3])
+        Xk = pd.DataFrame([[float(fert), float(irr), tmax, tmin, tavg, rain]], columns=['FERCUM', 'IRCUM', 'Acc_TMAX', 'Acc_TMIN', 'Acc_TAVG', 'Acc_RAIN'])
         if use_gpr:
             Xk_gpr = gpr_scaler.transform(Xk)
             y_hat, y_std = gpr_yield.predict(Xk_gpr, return_std=True)
@@ -807,7 +750,8 @@ print(f"图像已成功保存至:\n{output_png}\n{output_pdf}")
 plt.close(fig)
 
 if use_climate_features and (clim_year_pool is not None) and len(clim_year_pool) > 0:
-    rain_series = clim_year_pool['RAINCUM'].astype(float)
+    # 将原本按 RAINCUM 划分年份，改为按 Acc_RAIN 划分
+    rain_series = clim_year_pool['Acc_RAIN'].astype(float)
     q25 = float(rain_series.quantile(0.25))
     q75 = float(rain_series.quantile(0.75))
     mask_dry = rain_series <= q25
@@ -833,19 +777,20 @@ if use_climate_features and (clim_year_pool is not None) and len(clim_year_pool)
         if ENABLE_RELIABILITY_FILTER:
             Y_sc = np.empty((int(sub.shape[0]), n_grid), dtype=float)
         for k in range(sub.shape[0]):
-            rain, tav, par = float(sub[k, 0]), float(sub[k, 1]), float(sub[k, 2])
+            tmax, tmin, tavg, rain = float(sub[k, 0]), float(sub[k, 1]), float(sub[k, 2]), float(sub[k, 3])
             X_grid_sc = np.column_stack([
                 F_flat,
                 I_flat,
+                np.full(n_grid, tmax, dtype=float),
+                np.full(n_grid, tmin, dtype=float),
+                np.full(n_grid, tavg, dtype=float),
                 np.full(n_grid, rain, dtype=float),
-                np.full(n_grid, tav, dtype=float),
-                np.full(n_grid, par, dtype=float),
             ])
             if use_gpr:
-                X_grid_sc_gpr = gpr_scaler.transform(X_grid_sc)
+                X_grid_sc_gpr = gpr_scaler.transform(pd.DataFrame(X_grid_sc, columns=['FERCUM', 'IRCUM', 'Acc_TMAX', 'Acc_TMIN', 'Acc_TAVG', 'Acc_RAIN']))
                 yk = gpr_yield.predict(X_grid_sc_gpr)
             else:
-                yk = rf_yield.predict(X_grid_sc)
+                yk = rf_yield.predict(pd.DataFrame(X_grid_sc, columns=['FERCUM', 'IRCUM', 'Acc_TMAX', 'Acc_TMIN', 'Acc_TAVG', 'Acc_RAIN']))
             sum_y += yk
             if Y_sc is not None:
                 Y_sc[int(k)] = yk
@@ -936,8 +881,8 @@ if use_climate_features and (clim_year_pool is not None) and len(clim_year_pool)
                 y_means = np.empty(K_sc, dtype=float)
                 y_vars = np.zeros(K_sc, dtype=float)
                 for k in range(K_sc):
-                    rain, tav, par = float(sub[k, 0]), float(sub[k, 1]), float(sub[k, 2])
-                    Xk = np.array([[best_F_sc, best_I_sc, rain, tav, par]], dtype=float)
+                    tmax, tmin, tavg, rain = float(sub[k, 0]), float(sub[k, 1]), float(sub[k, 2]), float(sub[k, 3])
+                    Xk = pd.DataFrame([[best_F_sc, best_I_sc, tmax, tmin, tavg, rain]], columns=['FERCUM', 'IRCUM', 'Acc_TMAX', 'Acc_TMIN', 'Acc_TAVG', 'Acc_RAIN'])
                     if use_gpr:
                         Xk_gpr = gpr_scaler.transform(Xk)
                         y_hat, y_std = gpr_yield.predict(Xk_gpr, return_std=True)

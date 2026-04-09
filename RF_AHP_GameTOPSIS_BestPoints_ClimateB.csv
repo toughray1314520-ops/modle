@@ -1,0 +1,4 @@
+﻿tag,label,n_years,policy_pref_key,policy_pref_label,best_I_mm,best_F_kgNha,best_Y_kgHa,best_cs,best_rel,y_se,reliability_mode,reliability_min_effective,fallback_used
+P25,Dry years,10,high_yield,High yield,251.61616161616163,127.27272727272727,9828.29013671875,0.8009775289381833,0.9,171.58999846232965,fixed,0.9,False
+P50,Normal years,17,high_yield,High yield,251.61616161616163,127.27272727272727,9518.134535845587,0.7388672379777346,0.9411764705882353,120.14657935129688,fixed,0.8,False
+P75,Wet years,10,balanced_yield_resource,Balanced (Yield+Resource),42.82828282828283,145.45454545454544,9511.1583984375,0.6546861816228778,0.8,150.99308905107773,fixed,0.8,False

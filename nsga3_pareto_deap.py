@@ -3,6 +3,7 @@ import math
 import random
 import numpy as np
 import pandas as pd
+import joblib
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -45,60 +46,16 @@ POP_SIZE = 92
 def _try_paths():
     here = os.path.dirname(os.path.abspath(__file__))
     cands = [
-        os.path.join(os.path.dirname(here), "IR×FER66.xlsx"),
-        os.path.join(here, "IR×FER66.xlsx"),
+        os.path.join(os.path.dirname(here), "surrogate_dataset.csv"),
+        os.path.join(here, "surrogate_dataset.csv"),
     ]
     return [p for p in cands if os.path.exists(p)]
 
 
 def load_data(file_path):
-    xl = pd.ExcelFile(file_path)
-    sheets = xl.sheet_names
-    all_df = []
-    for sheet in sheets:
-        try:
-            df = pd.read_excel(file_path, sheet_name=sheet)
-            df.columns = df.columns.str.strip()
-            df['SheetName'] = sheet
-
-            if 'YEAR' in df.columns:
-                df = df[df['YEAR'].astype(str).str.strip().str.lower() != 'mean'].copy()
-                df['YEAR'] = pd.to_numeric(df['YEAR'], errors='coerce')
-                df = df[df['YEAR'].notna()].copy()
-
-            for _col in ['WRR14', 'IRCUM', 'RAINCUM', 'FERCUM', 'TAVERC', 'PARCUM']:
-                if _col in df.columns:
-                    df[_col] = pd.to_numeric(df[_col], errors='coerce')
-
-            fert_abs = np.nan
-            if 'FERCUM' in df.columns and df['FERCUM'].notna().any():
-                df['Fert_abs'] = df['FERCUM']
-            else:
-                parts = sheet.split('+')
-                fert_part = parts[0].upper().replace('N', '').strip()
-                try:
-                    if fert_part.endswith('%'):
-                        val = int(fert_part.replace('%', '').replace('+', ''))
-                        fert_pct = 100 + val
-                        fert_abs = 225 * fert_pct / 100.0
-                    else:
-                        fert_abs = float(fert_part)
-                except Exception:
-                    fert_abs = np.nan
-                df['Fert_abs'] = fert_abs
-
-            ir = df['IRCUM'].fillna(0) if 'IRCUM' in df.columns else pd.Series(0, index=df.index)
-            ra = df['RAINCUM'].fillna(0) if 'RAINCUM' in df.columns else pd.Series(0, index=df.index)
-            df['WUE'] = np.where((ir + ra) > 0, df['WRR14'] / (ir + ra), np.nan)
-
-            if 'FERCUM' not in df.columns or df['FERCUM'].isnull().all():
-                df['FERCUM'] = df['Fert_abs']
-            df['NUE'] = np.where(df['FERCUM'].fillna(0) > 0, df['WRR14'] / df['FERCUM'], np.nan)
-
-            all_df.append(df)
-        except Exception:
-            continue
-    return pd.concat(all_df, ignore_index=True) if len(all_df) > 0 else pd.DataFrame()
+    df = pd.read_csv(file_path)
+    df['Fert_abs'] = df['FERCUM']
+    return df
 
 
 def round_floor_step(x, step):
@@ -272,14 +229,15 @@ def precompute_objectives(model_y, model_n, model_w, climate_arr, fert_values, i
     n_combo = f_flat.size
     sum_y = np.zeros(n_combo, dtype=float)
     for k in range(climate_arr.shape[0]):
-        rain, tav, par = float(climate_arr[k, 0]), float(climate_arr[k, 1]), float(climate_arr[k, 2])
-        X = np.column_stack([
+        tmax, tmin, tavg, rain = float(climate_arr[k, 0]), float(climate_arr[k, 1]), float(climate_arr[k, 2]), float(climate_arr[k, 3])
+        X = pd.DataFrame(np.column_stack([
             f_flat,
             i_flat,
+            np.full(n_combo, tmax, dtype=float),
+            np.full(n_combo, tmin, dtype=float),
+            np.full(n_combo, tavg, dtype=float),
             np.full(n_combo, rain, dtype=float),
-            np.full(n_combo, tav, dtype=float),
-            np.full(n_combo, par, dtype=float),
-        ])
+        ]), columns=['FERCUM', 'IRCUM', 'Acc_TMAX', 'Acc_TMIN', 'Acc_TAVG', 'Acc_RAIN'])
         sum_y += model_y.predict(X)
     mean_y = (sum_y / float(climate_arr.shape[0])).reshape(Fg.shape)
     return mean_y
@@ -526,13 +484,14 @@ def add_yield_std(front_df, rf_y, climate_arr):
     for i, r in enumerate(df.itertuples(index=False)):
         fert = float(getattr(r, "fert"))
         irr = float(getattr(r, "irr"))
-        X = np.column_stack([
+        X = pd.DataFrame(np.column_stack([
             np.full(K, fert, dtype=float),
             np.full(K, irr, dtype=float),
             clim[:, 0],
             clim[:, 1],
             clim[:, 2],
-        ])
+            clim[:, 3],
+        ]), columns=['FERCUM', 'IRCUM', 'Acc_TMAX', 'Acc_TMIN', 'Acc_TAVG', 'Acc_RAIN'])
         yk = rf_y.predict(X).astype(float)
         stds[i] = float(np.std(yk, ddof=1))
     df["yield_std"] = stds
@@ -656,9 +615,9 @@ def main():
     out_dir = os.path.dirname(os.path.abspath(__file__))
     paths = _try_paths()
     if len(paths) == 0:
-        raise FileNotFoundError("IR×FER66.xlsx not found")
+        raise FileNotFoundError("surrogate_dataset.csv not found")
     df_raw = load_data(paths[0])
-    climate_cols = ['RAINCUM', 'TAVERC', 'PARCUM']
+    climate_cols = ['Acc_TMAX', 'Acc_TMIN', 'Acc_TAVG', 'Acc_RAIN']
     if 'YEAR' in df_raw.columns:
         clim_year_pool = df_raw[['YEAR'] + climate_cols].dropna(subset=['YEAR'] + climate_cols).groupby('YEAR', as_index=False)[climate_cols].mean()
     else:
@@ -667,11 +626,7 @@ def main():
     drop_cols = ['Fert_abs', 'IRCUM', 'WRR14'] + climate_cols
     df = df_raw.dropna(subset=drop_cols)
 
-    X = df[['Fert_abs', 'IRCUM'] + climate_cols].values
-    y_yield = df['WRR14'].values
-
-    rf_y = RandomForestRegressor(n_estimators=300, random_state=RANDOM_STATE, n_jobs=-1)
-    rf_y.fit(X, y_yield)
+    rf_y = joblib.load(os.path.join(out_dir, 'surrogate_model_best_tree.pkl'))
 
     fert_min = round_floor_step(float(np.nanmin(df['Fert_abs'])), FERT_STEP)
     fert_max = round_ceil_step(float(np.nanmax(df['Fert_abs'])), FERT_STEP)
@@ -771,7 +726,8 @@ def main():
         out_dir=diag_dir_A,
     )
 
-    rain_series = pd.Series(clim_year_pool['RAINCUM'].to_numpy(dtype=float))
+    # 将原本按 RAINCUM 划分年份，改为按 Acc_RAIN 划分
+    rain_series = pd.Series(clim_year_pool['Acc_RAIN'].to_numpy(dtype=float))
     q25 = float(rain_series.quantile(0.25))
     q75 = float(rain_series.quantile(0.75))
     mask_dry = rain_series <= q25
